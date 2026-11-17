@@ -28,8 +28,13 @@ NOISE_CASES = [(0, 0), (LOSS_PROB, 0), (0, BIT_FLIP_PROB), (LOSS_PROB, BIT_FLIP_
 
 
 def simulate(baud_rate, latency, loss_prob, bit_flip_prob,
-             packet_count=PACKET_COUNT, seed=SEED) -> dict:
-    """Paketleri gönderir, kanaldan geçirir, alıcıya verir; sonuçları döndürür."""
+             packet_count=PACKET_COUNT, seed=SEED, trace=None) -> dict:
+    """Paketleri gönderir, kanaldan geçirir, alıcıya verir; sonuçları döndürür.
+
+    trace bir liste verilirse her paket için
+    (sıra, seq, kanal, alıcı, not, gönderilen bayt, gelen bayt) satırı eklenir;
+    arayüz paket akışını ve paketin içini bununla gösterir.
+    """
     noise = NoiseModel(loss_prob, bit_flip_prob, seed=seed)
     channel = VirtualChannel(baud_rate, latency, noise)
     sender = Sender(TEAM_ID, seed=seed)
@@ -48,13 +53,31 @@ def simulate(baud_rate, latency, loss_prob, bit_flip_prob,
 
         if data is None:                             # paket kayboldu
             lost += 1
+            if trace is not None:
+                trace.append((i, i % 256, "KAYBOLDU", "-", "", packet, None))
             continue
 
+        before = receiver.stats()
         telemetry = receiver.receive(data, time + duration)   # alıcı kontrol eder
         if data != packet:                           # main orijinali bildiği için
             flipped += 1                             # bozulmayı kesin olarak görür
             if telemetry is not None:
                 missed += 1
+
+        if trace is not None:
+            after = receiver.stats()
+            channel_state = "bit bozuldu" if data != packet else "geldi"
+            if after["corrupted"] > before["corrupted"]:
+                verdict = "ATILDI (checksum)"
+            elif after["out_of_range"] > before["out_of_range"]:
+                verdict = "ATILDI (aralık)"
+            elif data != packet:
+                verdict = "FARK EDİLMEDİ"
+            else:
+                verdict = "sağlam"
+            found = after["lost"] - before["lost"]
+            note = f"SEQ boşluğu: {found} kayıp bulundu" if found else ""
+            trace.append((i, i % 256, channel_state, verdict, note, packet, data))
 
     stats = receiver.stats()
     result = {
