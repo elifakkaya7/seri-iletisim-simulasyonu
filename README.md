@@ -1,133 +1,109 @@
 # Seri İletişim Bağlantı Simülasyonu
 
-Gerçek donanım olmadan, iki sistem arasındaki **veri paketleme, gönderme, alma ve hata ayıklama** sürecini sanal bir ortamda simüle eden Python projesi. Taşınan veri, TEKNOFEST Savaşan İHA Yarışması'nın telemetri paketidir (konum, irtifa, hız, batarya, kilitlenme).
+İHA telemetri paketlerinin sanal bir seri hattan gönderilmesini simüle eden Python projesi.
+Gönderici telemetri paketleri üretir. Paketler, baud rate ve gecikmesi ayarlanabilen sanal bir hattan
+geçerken kaybolabilir ya da bitleri bozulabilir. Alıcı her paketi checksum ile kontrol eder ve sağlam olanları kabul eder.
 
-```
-Gönderici  ->  Kanal  ->  Gürültü  ->  Alıcı
- Sender     VirtualChannel  NoiseModel   Receiver
-```
+Telemetri alanları TEKNOFEST Savaşan İHA Haberleşme Dokümanı'na göre seçildi.
 
-| Yönerge | Ne yapıyor | Dosya |
-|---|---|---|
-| 5.1 Sanal veri hattı | Baud rate ve gecikmeye göre paketin hattan geçme süresini hesaplar | `serisim/channel.py` |
-| 5.2 Gürültü ve hata | Paket kaybı ve bit flip uygular | `serisim/noise.py` |
-| 5.3 Protokol ve checksum | Paketi Header + Payload + Checksum yapar, alıcı bozuk paketi yakalar | `serisim/packet.py`, `checksum.py`, `receiver.py` |
+## Yönerge maddeleri
 
-## Çalıştırma
-
-Python 3.10 veya üstü gerekir, ek kütüphane yok.
-
-```bash
-git clone https://github.com/elifakkaya7/seri-iletisim-simulasyonu.git
-cd seri-iletisim-simulasyonu
-python main.py     # üç bölümlü rapor basar
-python gui.py      # ayarları kaydırıcılarla değiştirebileceğin arayüz
-```
-
-Türkçe karakterler bozuk çıkarsa: `python -X utf8 main.py`
-
-Her modül tek başına da denenebilir: `python -m serisim.noise`, `python -m serisim.receiver` gibi.
+| Madde | Karşılığı |
+|---|---|
+| 5.1 Sanal veri hattı (baud rate, gecikme) | `channel.py` |
+| 5.2 Gürültü (paket kaybı, bit flip) | `noise.py` |
+| 5.3 Header + Payload + Checksum, alıcıda doğrulama | `packet.py`, `checksum.py`, `receiver.py` |
 
 ## Proje yapısı
 
 ```
-main.py           Simülasyonu çalıştırır, raporu basar
-gui.py            Arayüz (tkinter)
+main.py              # simülasyonu çalıştırır, raporu yazdırır
+gui.py               # ayarları değiştirip sonucu görmek için arayüz
 serisim/
-  checksum.py     XOR checksum
-  packet.py       Packet: encode() ve decode()
-  noise.py        NoiseModel: paket kaybı ve bit flip
-  channel.py      VirtualChannel: baud rate ve gecikme
-  sender.py       Sender: sahte telemetri üretir
-  receiver.py     Receiver: doğrular, sayar, kayıp paketi bulur
+├── checksum.py      # XOR checksum
+├── packet.py        # paket oluşturma (encode) ve çözme (decode)
+├── channel.py       # sanal hat: iletim süresi = bayt × 10 / baud + gecikme
+├── noise.py         # paket kaybı ve bit flip
+├── sender.py        # telemetri üretir, paketler
+└── receiver.py      # paketi doğrular, sayar
 ```
 
-Kanal ve gürültü yalnızca `bytes` alıp `bytes` verir, paketin içini bilmez.
+## Nasıl çalışıyor
 
-## Nasıl çalışıyor?
+1. **Gönderici (`sender.py`)** saniyede 2 kez telemetri verisi üretir. Bu veri konum, irtifa, hız, batarya, kilitlenme bilgisi ve GPS saati gibi alanlardan oluşur. Değerler gerçek bir uçuşa benzesin diye zamanla değişecek şekilde hesaplanır.
+2. **Paketleme (`packet.py`)** bu veriyi `struct` ile 53 baytlık payload'a çevirir. Başına header (START, SEQ, LEN), sonuna checksum ekleyerek 57 baytlık paketi oluşturur.
+3. **Sanal hat (`channel.py`)** paketin iletim süresini hesaplar. Seri haberleşmede her bayt başlangıç ve bitiş bitleriyle birlikte 10 bit olarak gider, bu yüzden süre `bayt × 10 / baud + gecikme` ile bulunur.
+4. **Gürültü (`noise.py`)** hat üzerinde iki tür hata oluşturur:
+   - **Paket kaybı:** paket belirli bir olasılıkla hiç ulaşmaz.
+   - **Bit flip:** paketin her biti belirli bir olasılıkla ters çevrilir (0 → 1, 1 → 0).
+5. **Alıcı (`receiver.py`)** gelen paketi açar ve kontrol eder:
+   - Checksum'ı yeniden hesaplar. Pakettekiyle tutmazsa paketi bozuk sayıp atar.
+   - SEQ numarasındaki atlamalara bakarak kaybolan paketleri bulur.
+   - Değerlerin geçerli aralıkta olup olmadığına bakar.
+   - Bu kontrollerin hepsinden geçen paketi sağlam sayar.
+6. **`main.py`** bu adımları 1000 paket için çalıştırır. Farklı baud rate ve gürültü ayarlarını deneyip sonuçları yönergedeki 5.1, 5.2 ve 5.3 başlıklarına göre yazdırır.
+7. **`gui.py`** aynı simülasyonu bir pencerede çalıştırır. Ayarlar kaydırıcılarla değiştirilir ve sonuç anında görülür. Her paketin başına ne geldiği (sağlam, kayboldu, checksum attı) listelenir. Seçilen paketin baytları da bozulan yerler işaretli olarak gösterilir.
 
-**Paket (57 bayt):**
+## Paket yapısı (57 bayt)
 
 | START | SEQ | LEN | PAYLOAD | CHECKSUM |
 |---|---|---|---|---|
-| 1 bayt, `0xAA` | 1 bayt, sıra no (0–255) | 1 bayt, 53 | 53 bayt, telemetri | 1 bayt, XOR |
+| 1 bayt (`0xAA`) | 1 bayt | 1 bayt | 53 bayt telemetri | 1 bayt |
 
-Checksum, SEQ + LEN + PAYLOAD baytlarının XOR'udur. Payload, yarışmanın telemetri alanlarından oluşur: takım no, enlem, boylam, irtifa, dikilme, yönelme, yatış, hız, batarya, otonom, kilitlenme, hedef konumu ve boyutu, GPS saati.
+- **SEQ:** paketin sıra numarası. Alıcı aradaki boşluklara bakarak kaybolan paketleri bulur.
+- **CHECKSUM:** SEQ, LEN ve PAYLOAD baytlarının XOR'u. Alıcı aynı hesabı tekrar yapar; sonuç tutmazsa paketi atar.
+- Checksum tutan paketlerde değerlerin geçerli aralıkta olup olmadığı da kontrol edilir (örneğin enlem −90..90).
 
-**Kanal:** Seri hatta her bayt 10 bit gider, süre şöyle hesaplanır:
+## Çalıştırma
 
-```
-süre = bayt sayısı x 10 / baud rate + gecikme
-```
+Python 3.10 veya üstü gerekir, ek kütüphane gerekmez.
 
-Örnek: 57600 baud'da `570 / 57600 + 50 ms = 59,9 ms`. 1200 baud'da 525 ms sürer; 2 Hz'lik gönderim aralığını (500 ms) aştığı için hat yetişemez. Süreler hesaplanır, gerçekten beklenmez.
-
-**Gürültü:** Paket verilen olasılıkla düşer; düşmezse her bit verilen olasılıkla ters çevrilir.
-
-**Alıcı:** Gelen paketi sırayla kontrol eder ve geçemeyeni atar:
-1. START, uzunluk ve checksum
-2. Alan aralıkları (örneğin yatış −90…+90 dışındaysa paket atılır)
-3. Kayıp tespiti: Kaybolan paketi doğrudan göremez, **SEQ numaralarındaki boşluktan** anlar (5'ten sonra 8 geldiyse 6 ve 7 kayıptır).
-
-## Parametreler
-
-| Parametre | Değer |
-|---|---|
-| Gönderim hızı | 2 Hz (şartnamede telemetri 1–2 Hz) |
-| Baud rate | 57600 |
-| Gecikme | 50 ms |
-| Paket kaybı | %5 (0,05) |
-| Bit flip | 0,0002 (bit başına) |
-| Paket sayısı | 1000 (500 sn) |
-| Seed | 42 (aynı sonuç her seferinde) |
-
-Baud rate, gecikme, kayıp ve bit flip için yarışma belgelerinde değer yoktur; bunlar bu projenin seçimleridir. `main.py`'nin başından ya da `gui.py`'den değiştirilebilir.
-
-## Örnek çıktı
-
-```
-=== SERİ İLETİŞİM BAĞLANTI SİMÜLASYONU ===
-Paket yapısı: START(1) + SEQ(1) + LEN(1) + PAYLOAD(53) + CHECKSUM(1) = 57 bayt
-Gönderim: 1000 paket, 2 Hz, seed=42
-
---- 5.1 Sanal veri hattı: baud rate ve gecikmenin etkisi ---
-   Baud   Gecikme  Paket süresi  Durum
-   1200     50 ms      525.0 ms  UYARI: 500 ms gönderim aralığına sığmıyor
-   9600     50 ms      109.4 ms  OK
-  57600     50 ms       59.9 ms  OK
- 115200     50 ms       54.9 ms  OK
-  57600    200 ms      209.9 ms  OK
-Süre = 57 bayt x 10 bit / baud + gecikme
-
---- 5.2 Gürültü ve hata: paket kaybı ve bit flip'in etkisi ---
- Kayıp  Bit flip  Kaybolan   Bozuk          Sağlam
-     0         0         0       0   1000 (%100.0)   <- gürültüsüz kontrol
-  0.05         0        44       0    956 ( %95.6)
-     0    0.0002         0      77    923 ( %92.3)
-  0.05    0.0002        44      73    883 ( %88.3)
-   0.2     0.001       204     276    520 ( %52.0)
-
---- 5.3 Protokol ve checksum (kayıp 0.05, bit flip 0.0002) ---
-Gönderilen paket               : 1000
-Kanalda kaybolan (gerçek)      : 44
-Alıcının SEQ ile bulduğu kayıp : 44
-Kanalda bozulan paket          : 75
-  Checksum'ın yakaladığı       : 73
-  Aralık kontrolünün yakaladığı: 0
-  Fark edilmeden geçen         : 2
-Sağlam ulaşan                  : 883 (%88.3)
-Ortalama paket süresi          : 59.9 ms
+```bash
+python main.py      # konsol raporu
+python gui.py       # arayüz
 ```
 
-- **5.1:** Baud düştükçe paket süresi artar. 1200 baud'da uyarı çıkar.
-- **5.2:** Gürültü kapalıyken 1000 paketin 1000'i sağlam gelir. Gürültü arttıkça kayıp ve bozuk paket sayısı da artar.
-- **5.3:** Alıcı kaybolan 44 paketin hepsini SEQ ile bulur. Bozulan 75 paketin 73'ünü checksum yakalar, 2'si geçer (XOR checksum aynı bit konumundaki iki bozulmayı yakalayamaz).
+Modüller tek tek de test edilebilir:
 
-## Kim neyi yaptı?
+```bash
+python -m serisim.packet
+python -m serisim.receiver
+```
 
-| Kişi | Dosyalar |
-|---|---|
-| **Elif Akkaya** | `checksum.py`, `packet.py`, `receiver.py`, `main.py`, `gui.py` |
-| **Yasir Yusuf Sevgili** | `channel.py`, `noise.py`, `sender.py` |
+## Sonuçlar
 
-Elif protokol tarafını ve bütünleştirmeyi (5.3), Yasir kanal tarafını ve veri üretimini (5.1 ve 5.2) üstlendi. Her görev ayrı bir `feature/` dalında geliştirildi.
+Varsayılan ayarlar: 57600 baud, 0.05 s gecikme, 0.05 paket kaybı olasılığı, bit başına 0.0002 bit flip olasılığı, 1000 paket, 2 Hz.
+
+| Kayıp | Bit flip | Kaybolan | Bozuk | Sağlam |
+|---|---|---|---|---|
+| 0 | 0 | 0 | 0 | 1000 (%100) |
+| 0.05 | 0 | 44 | 0 | 956 (%95.6) |
+| 0 | 0.0002 | 0 | 77 | 923 (%92.3) |
+| 0.05 | 0.0002 | 44 | 73 | 883 (%88.3) |
+
+- Gürültü yokken bütün paketler sağlam ulaşıyor. Gürültü arttıkça sağlam ulaşan paket oranı düşüyor.
+- Bir paketin iletimi 57600 baud'da 59.9 ms sürüyor. 1200 baud'da ise 525 ms sürüyor ve 500 ms'lik gönderim aralığına sığmıyor.
+- Alıcı kaybolan 44 paketin hepsini SEQ ile buldu. Bozulan 75 paketin 73'ünü checksum yakaladı. Kalan 2 paket fark edilmeden geçti, çünkü XOR checksum aynı bit konumunda iki bozulma olunca hatayı göremiyor.
+
+## Git akışı
+
+Her parça ayrı bir feature branch'inde yazıldı ve pull request ile `main`'e alındı.
+Her PR'ı diğer ekip üyesi inceleyip merge etti.
+
+## Ekip
+
+- **Elif Akkaya:** [@elifakkaya7](https://github.com/elifakkaya7)
+- **Yasir Yusuf Sevgili:** [@YasirYusufSevgili](https://github.com/YasirYusufSevgili)
+
+| Görev | Dosya | Yapan |
+|---|---|---|
+| Proje iskeleti | `serisim/`, `.gitignore` | Elif |
+| XOR checksum | `checksum.py` | Elif |
+| Paket yapısı (encode / decode) | `packet.py` | Elif |
+| Sanal hat (baud rate, gecikme) | `channel.py` | Yasir |
+| Paket kaybı ve bit flip | `noise.py` | Yasir |
+| Telemetri üretimi (gönderici) | `sender.py` | Yasir |
+| Paket doğrulama, SEQ ile kayıp bulma (alıcı) | `receiver.py` | Elif |
+| Simülasyon ve rapor | `main.py` | Elif |
+| Arayüz | `gui.py` | Elif |
+| README | `README.md` | Elif ve Yasir |
