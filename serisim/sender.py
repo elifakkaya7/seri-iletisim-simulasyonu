@@ -43,16 +43,15 @@ class Sender:
         }
 
     def create_packet(self, time):
-        """Telemetriyi üretir ve Packet nesnesi olarak döndürür."""
+        """Telemetriyi üretir, paketler ve bayt olarak döndürür (kanal bytes taşır)."""
         seq = int(time * 2)          # 2 Hz: her 0,5 saniyede bir paket
-        return Packet(seq, self.generate_telemetry(time))
+        return Packet(seq, self.generate_telemetry(time)).encode()
 
 
 if __name__ == "__main__":
     s = Sender(team_id=1, seed=1)
 
-    p = s.create_packet(0)
-    data = p.encode()
+    data = s.create_packet(0)
     print("Paket boyutu:", len(data))                 # 57 olmalı
 
     back = Packet.decode(data)
@@ -66,5 +65,5 @@ if __name__ == "__main__":
 
     # 1000 paketin hepsi 57 bayt ve decode edilebilir mi?
     for i in range(1000):
-        Packet.decode(s.create_packet(i / 2).encode())
+        Packet.decode(s.create_packet(i / 2))
     print("1000 paket sorunsuz")
