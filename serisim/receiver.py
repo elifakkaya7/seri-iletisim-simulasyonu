@@ -27,10 +27,14 @@ TARGET_FIELDS = ["hedef_merkez_X", "hedef_merkez_Y", "hedef_genislik", "hedef_yu
 
 
 class Receiver:
-    def __init__(self):
+    def __init__(self, first_seq: int = 0):
         self.valid = 0          # sağlam paket sayısı
         self.corrupted = 0      # checksum ya da yapı hatası
         self.out_of_range = 0   # checksum tuttu ama değer aralık dışında
+        self.lost = 0           # SEQ boşluklarından bulunan kayıp paket sayısı
+
+        self.expected_seq = first_seq % 256   # bir sonraki beklenen sıra numarası
+        self._bad_since_last = 0              # son okunabilen paketten beri bozuk gelen
 
     def receive(self, data: bytes, time: float) -> dict | None:
         """Paket sağlamsa telemetriyi, değilse None döndürür.
@@ -41,7 +45,10 @@ class Receiver:
             packet = Packet.decode(data)   # bozuksa ValueError fırlatır
         except ValueError:
             self.corrupted += 1
+            self._bad_since_last += 1      # SEQ'i okunamadı ama bir paket geldi
             return None
+
+        self._check_seq(packet.seq)
 
         if not self._in_range(packet.telemetry):
             self.out_of_range += 1
@@ -55,7 +62,21 @@ class Receiver:
             "valid": self.valid,
             "corrupted": self.corrupted,
             "out_of_range": self.out_of_range,
+            "lost": self.lost,
         }
+
+    def _check_seq(self, seq: int) -> None:
+        """Beklenen ile gelen sıra numarası arasındaki boşluktan kaybı bulur.
+
+        Boşlukta hem hiç gelmeyen hem de bozuk gelen (SEQ'i okunamayan) paketler
+        vardır; bozuk gelenler zaten sayıldığı için boşluktan çıkarılır.
+        Sınırlar: son okunabilen paketten sonraki kayıplar ve arka arkaya
+        256+ kayıp fark edilmez.
+        """
+        gap = (seq - self.expected_seq) % 256    # 255'ten 0'a dönüşü de hesaba katar
+        self.lost += max(0, gap - self._bad_since_last)
+        self._bad_since_last = 0
+        self.expected_seq = (seq + 1) % 256
 
     @staticmethod
     def _in_range(telemetry: dict) -> bool:
@@ -87,13 +108,23 @@ if __name__ == "__main__":
     }
     receiver = Receiver()
 
-    receiver.receive(Packet(1, sample).encode(), 0.0)          # sağlam
+    receiver.receive(Packet(0, sample).encode(), 0.0)          # sağlam
 
     wrong = dict(sample, iha_yatis=400)                        # yatış aralık dışı
-    receiver.receive(Packet(2, wrong).encode(), 0.5)
+    receiver.receive(Packet(1, wrong).encode(), 0.5)
 
-    corrupted = bytearray(Packet(3, sample).encode())
+    corrupted = bytearray(Packet(2, sample).encode())
     corrupted[20] ^= 1                                         # bir bit bozuldu
     receiver.receive(bytes(corrupted), 1.0)
 
-    print(receiver.stats())   # {'valid': 1, 'corrupted': 1, 'out_of_range': 1} olmalı
+    receiver.receive(Packet(3, sample).encode(), 1.5)          # sağlam
+    # 4 ve 5 hiç gönderilmedi (kayıp)
+    receiver.receive(Packet(6, sample).encode(), 3.0)          # sağlam
+
+    # sıra numarası 255'ten 0'a dönerken kayıp: 254 sonra 1 -> 255 ve 0 kayıp
+    wrap = Receiver(first_seq=254)
+    wrap.receive(Packet(254, sample).encode(), 0.0)
+    wrap.receive(Packet(1, sample).encode(), 1.5)
+
+    print(receiver.stats())   # {'valid': 3, 'corrupted': 1, 'out_of_range': 1, 'lost': 2} olmalı
+    print("Başa dönüşte kayıp:", wrap.lost)                     # 2 olmalı
